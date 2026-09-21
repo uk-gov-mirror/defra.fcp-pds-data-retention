@@ -8,7 +8,8 @@ const sendPublishMessage = require('../../../app/messaging/send-publish-message'
 const db = require('../../../app/data')
 const { getMappedAgreementNumber } = require('../../../app/publishing/get-mapped-agreement-number')
 const { publishRetentionData } = require('../../../app/publishing/publish-retention-data')
-const { SFI_PILOT, CS } = require('../../../app/constants/schemes')
+const { SFI_PILOT, CS, MANUAL, SFI23, WMP } = require('../../../app/constants/schemes')
+const { SFI_PILOT: SFI_PILOT_PILLAR, CS: CS_PILLAR, SFI23: SFI23_PILLAR } = require('../../../app/constants/pillars')
 
 describe('publishRetentionData', () => {
   beforeEach(() => {
@@ -204,5 +205,83 @@ describe('publishRetentionData', () => {
       agreementNumber: 'mapped-789',
       usesContractNumber: false
     }))
+  })
+
+  test('should send an additional manual scheme message with the pillar for the originating scheme', async () => {
+    const mockData = [
+      { retentionDataId: 1, frn: 'FRN001', agreementNumber: 'AGR001', schemeId: SFI23 }
+    ]
+    getPendingRetentionData.mockResolvedValue(mockData)
+
+    await publishRetentionData()
+
+    expect(sendPublishMessage).toHaveBeenCalledTimes(2)
+    expect(sendPublishMessage).toHaveBeenCalledWith(expect.not.objectContaining({
+      pillar: expect.anything()
+    }))
+    expect(sendPublishMessage).toHaveBeenCalledWith(expect.objectContaining({
+      retentionDataId: 1,
+      schemeId: SFI23
+    }))
+    expect(sendPublishMessage).toHaveBeenCalledWith(expect.objectContaining({
+      retentionDataId: 1,
+      schemeId: MANUAL,
+      pillar: SFI23_PILLAR
+    }))
+  })
+
+  test('should carry mapped agreement number and usesContractNumber onto the manual scheme message', async () => {
+    const mockData = [
+      { retentionDataId: 1, frn: 'FRN001', agreementNumber: '123', schemeId: SFI_PILOT },
+      { retentionDataId: 2, frn: 'FRN002', agreementNumber: '456', schemeId: CS }
+    ]
+    getPendingRetentionData.mockResolvedValue(mockData)
+    getMappedAgreementNumber.mockImplementation((schemeId, agreementNumber) => `mapped-${agreementNumber}`)
+
+    await publishRetentionData()
+
+    expect(sendPublishMessage).toHaveBeenCalledTimes(4)
+    expect(sendPublishMessage).toHaveBeenCalledWith(expect.objectContaining({
+      schemeId: MANUAL,
+      pillar: SFI_PILOT_PILLAR,
+      agreementNumber: 'mapped-123',
+      simplifiedAgreementNumber: '123',
+      usesContractNumber: true
+    }))
+    expect(sendPublishMessage).toHaveBeenCalledWith(expect.objectContaining({
+      schemeId: MANUAL,
+      pillar: CS_PILLAR,
+      agreementNumber: 'mapped-456',
+      simplifiedAgreementNumber: '456',
+      usesContractNumber: true
+    }))
+  })
+
+  test('should not send a manual scheme message for schemes without a pillar', async () => {
+    const mockData = [
+      { retentionDataId: 1, frn: 'FRN001', agreementNumber: 'AGR001', schemeId: WMP },
+      { retentionDataId: 2, frn: 'FRN002', agreementNumber: 'AGR002', schemeId: MANUAL }
+    ]
+    getPendingRetentionData.mockResolvedValue(mockData)
+
+    await publishRetentionData()
+
+    expect(sendPublishMessage).toHaveBeenCalledTimes(2)
+    expect(sendPublishMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+      pillar: expect.anything()
+    }))
+  })
+
+  test('should destroy each retention record once regardless of the number of messages sent', async () => {
+    const mockData = [
+      { retentionDataId: 1, frn: 'FRN001', agreementNumber: 'AGR001', schemeId: SFI23 }
+    ]
+    getPendingRetentionData.mockResolvedValue(mockData)
+
+    await publishRetentionData()
+
+    expect(db.retentionData.destroy).toHaveBeenCalledWith({
+      where: { retentionDataId: [1] }
+    })
   })
 })
